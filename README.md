@@ -22,7 +22,7 @@ The cache stores up to 300 entries (2x the blockhash TTL window) as a `VecDeque`
 
 ```toml
 [dependencies]
-solana-blockhash-cache = "0.1"
+solana-blockhash-cache = { git = "git@github.com:blueshift-gg/solana-blockhash-cache.git", branch = "master }
 ```
 
 ```rust
