@@ -1,0 +1,24 @@
+[package]
+name = "solana-blockhash-cache"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+solana-hash = "4.2.0"
+solana-commitment-config = "3.1.1"
+anyhow = "1.0.102"
+tokio = { version = "1.51.0", features = ["sync"] }
+url = "2.5.8"
+yellowstone-grpc-client = "13.0.0"
+yellowstone-grpc-proto = "12.1.0"
+solana-rpc-client = "3.1.12"
+solana-transaction-status-client-types = "3.1.12"
+solana-pubsub-client = "3.1.12"
+futures-util = "0.3.32"
+tokio-util = "0.7.18"
+solana-rpc-client-api = "3.1.12"
+tracing = "0.1.44"
+
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

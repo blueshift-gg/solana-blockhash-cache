@@ -1,0 +1,5 @@
+# Merge imports from the same module into a single use statement.
+imports_granularity = "Module"
+format_strings = true
+# create a single group for everything
+group_imports = "One"
