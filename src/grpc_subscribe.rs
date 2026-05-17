@@ -2,6 +2,7 @@ use crate::blockhash_cache_service::{
     BLOCKHASH_MAX_AGE_SLOTS, BlockhashLink, BlockhashSequence, Slot,
 };
 use futures_util::StreamExt;
+use solana_commitment_config::{CommitmentConfig, CommitmentLevel as SolanaCommitmentLevel};
 use solana_hash::Hash;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -22,6 +23,7 @@ const MAX_RETRY_ATTEMPTS: u32 = 5;
 pub struct GrpcBlockhashSubscribe {
     grpc_url: Url,
     grpc_x_token: Option<String>,
+    commitment: CommitmentConfig,
     blockhash_cache: Arc<BlockhashSequence>,
     signal_blockhash_backfill_tx: oneshot::Sender<Slot>,
     shutdown_token: CancellationToken,
@@ -31,6 +33,7 @@ impl GrpcBlockhashSubscribe {
     pub fn new(
         grpc_url: Url,
         grpc_x_token: Option<String>,
+        commitment: CommitmentConfig,
         blockhash_cache: Arc<BlockhashSequence>,
         signal_blockhash_backfill_tx: oneshot::Sender<Slot>,
         shutdown_token: CancellationToken,
@@ -38,6 +41,7 @@ impl GrpcBlockhashSubscribe {
         Self {
             grpc_url,
             grpc_x_token,
+            commitment,
             blockhash_cache,
             signal_blockhash_backfill_tx,
             shutdown_token,
@@ -49,6 +53,7 @@ impl GrpcBlockhashSubscribe {
             let GrpcBlockhashSubscribe {
                 grpc_url,
                 grpc_x_token,
+                commitment,
                 blockhash_cache,
                 signal_blockhash_backfill_tx,
                 shutdown_token,
@@ -106,7 +111,7 @@ impl GrpcBlockhashSubscribe {
                     }
 
                     let (mut _subscribe_tx, mut stream) = match client
-                        .subscribe_with_request(Some(blockhash_subscription()))
+                        .subscribe_with_request(Some(blockhash_subscription(commitment)))
                         .await
                     {
                         Ok(s) => {
@@ -199,7 +204,7 @@ impl GrpcBlockhashSubscribe {
     }
 }
 
-fn blockhash_subscription() -> SubscribeRequest {
+fn blockhash_subscription(commitment: CommitmentConfig) -> SubscribeRequest {
     let mut blockhash_subs = HashMap::new();
     blockhash_subs.insert(
         "blockhash_sub".to_string(),
@@ -207,7 +212,15 @@ fn blockhash_subscription() -> SubscribeRequest {
     );
     SubscribeRequest {
         blocks_meta: blockhash_subs,
-        commitment: Some(CommitmentLevel::Processed as i32),
+        commitment: Some(to_yellowstone_commitment(commitment) as i32),
         ..Default::default()
+    }
+}
+
+fn to_yellowstone_commitment(commitment: CommitmentConfig) -> CommitmentLevel {
+    match commitment.commitment {
+        SolanaCommitmentLevel::Processed => CommitmentLevel::Processed,
+        SolanaCommitmentLevel::Confirmed => CommitmentLevel::Confirmed,
+        SolanaCommitmentLevel::Finalized => CommitmentLevel::Finalized,
     }
 }
