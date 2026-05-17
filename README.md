@@ -1,33 +1,57 @@
 # solana-blockhash-cache
 
-A Rust library for maintaining a real-time cache of Solana blockhashes, enabling fine-grained control over transaction expiry and blockhash validity checks.
+A Rust library for maintaining a real-time cache of Solana blockhashes, enabling fine-grained control over transaction expiry and local blockhash validity checks.
 
 ## Why
 
-Solana blockhashes expire after ~150 slots (~60 seconds). Most applications just fetch the latest blockhash and hope the transaction lands in time. This library lets you:
+A Solana blockhash is valid for `BLOCKHASH_MAX_AGE_SLOTS = 151` slots (~60s at 400ms/slot). A validator processing your transaction at slot `S` accepts it only if the embedded blockhash was minted at a slot `>= S - 150`. The "freshness" of the blockhash you sign with directly determines how long your transaction has to land before validators reject it as expired.
 
-- **Choose a blockhash with a specific expiry** — e.g. give a transaction exactly 30 seconds to land, rather than up to 60
-- **Check blockhash validity** locally without an RPC call
-- **Fall back to RPC** gracefully when the cache is not yet warm
+Most clients call `getLatestBlockhash` and accept the full ~60s window. This library lets you instead:
 
-This is particularly useful for MEV bots, trading bots, and latency-sensitive applications where you want precise control over transaction timeout strategy.
+- **Pick a blockhash with a chosen expiry window** — e.g. give a transaction exactly 10s of validity rather than up to 60s, so it auto-expires on stale market data instead of landing late.
+- **Check blockhash validity locally** without an RPC call.
+- **Fall back to RPC** automatically when the cache is not yet warm.
+
+Useful for trading bots, MEV, and any latency-sensitive client that wants explicit control over transaction timeout.
 
 ## How it works
 
-The cache subscribes to Solana block metadata via Yellowstone gRPC and maintains a sequence of `BlockhashLink` entries — each linking a slot's blockhash to its parent. On startup, it backfills the last 151 slots from RPC so the cache is immediately usable.
+The cache maintains an oldest-to-newest `VecDeque<BlockhashLink>` of recent blocks. Each `BlockhashLink` records `(parent_slot, parent_hash, current_slot, current_hash)`, so adjacent entries form a verifiable chain.
 
-The cache stores up to 300 entries (2x the blockhash TTL window) as a `VecDeque`, ordered oldest to newest.
+Three components keep it populated:
+
+1. **gRPC subscriber** (`grpc_subscribe.rs`) — subscribes to Yellowstone `blocks_meta` and appends each new block to the back of the deque. Trims to `BLOCKHASH_MAX_AGE_SLOTS` once it grows past the threshold. Reconnects with exponential backoff (up to 5 attempts) on failure.
+2. **Backfiller** (`backfiller.rs`) — on startup, the gRPC subscriber signals the first observed `parent_slot`. The backfiller walks backwards from that slot via `getBlock` RPC, pushing each ancestor onto the front of the deque until 151 entries are present. `BlockhashCacheService::start` blocks on this, so the cache is immediately usable when `start` returns.
+3. **Service API** (`blockhash_cache_service.rs`) — read-only accessors over the cache, with RPC fallback when the cache is `Unhealthy` (fewer than 151 entries).
+
+### The expiry mechanic
+
+`get_blockhash_with_expiry(expiry_in_ms)` does not produce a new blockhash. It computes how many slots of remaining validity the caller wants, then returns an already-aged blockhash from earlier in the deque:
+
+```
+computed_slots = ceil(expiry_in_ms / 400)     // desired slots of runway
+age            = 151 - computed_slots         // slots of life already consumed
+index          = cache_len - age - 1          // position in the deque (0 = oldest)
+```
+
+A 10s expiry asks for 25 slots of runway, so the library returns a blockhash already 126 slots old. Validators will accept it for ~25 more slots, then reject it as expired.
+
+### Chain integrity
+
+`verify_blockhash_chain()` walks the deque and confirms every adjacent pair satisfies `prev.current_hash == next.parent_hash` and `prev.current_slot == next.parent_slot`. A break indicates a reorg has poisoned the cache.
 
 ## Usage
 
 ```toml
 [dependencies]
-solana-blockhash-cache = { git = "git@github.com:blueshift-gg/solana-blockhash-cache.git", branch = "master }
+solana-blockhash-cache = { git = "git@github.com:blueshift-gg/solana-blockhash-cache.git", branch = "master" }
 ```
 
 ```rust
-use solana_blockhash_cache::{BlockhashCacheService, BlockhashSource, ServiceConfig};
+use solana_blockhash_cache::blockhash_cache_service::BlockhashCacheService;
+use solana_blockhash_cache::config::ServiceConfig;
 use solana_commitment_config::CommitmentConfig;
+use std::str::FromStr;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -36,65 +60,51 @@ async fn main() -> anyhow::Result<()> {
     let config = ServiceConfig::try_new(
         std::env::var("SOLANA_RPC_URL")?,
         CommitmentConfig::processed(),
-        BlockhashSource::Grpc {
-            url: Url::parse(&std::env::var("GRPC_URL")?)?,
-            x_token: std::env::var("GRPC_X_TOKEN").ok(),
-        },
+        Url::from_str(&std::env::var("GRPC_URL")?)?,
+        std::env::var("GRPC_X_TOKEN")?,
     )?;
 
     let shutdown = CancellationToken::new();
     let cache = BlockhashCacheService::start(config, shutdown.clone()).await;
 
-    // Get the latest blockhash
-    let blockhash = cache.get_latest_blockhash().await?;
-    println!("latest blockhash: {}", blockhash);
+    let latest = cache.get_latest_blockhash().await?;
+    println!("latest blockhash: {}", latest);
 
-    // Get a blockhash that expires in ~10 seconds (25 slots)
-    let blockhash = cache.get_blockhash_with_expiry(10_000).await?;
-    println!("blockhash with 10s expiry: {}", blockhash);
+    // Blockhash with ~10s of remaining validity.
+    let short_lived = cache.get_blockhash_with_expiry(10_000).await?;
+    println!("10s-expiry blockhash: {}", short_lived);
 
-    // Check if a blockhash is still valid
-    let is_valid = cache.is_blockhash_valid(&blockhash).await?;
-    println!("is valid: {}", is_valid);
+    let valid = cache.is_blockhash_valid(&short_lived).await?;
+    println!("is valid: {}", valid);
 
+    shutdown.cancel();
     Ok(())
 }
 ```
 
 ## API
 
-### `BlockhashCacheService::start`
-
-Starts the cache service. Blocks until the initial backfill is complete.
-
-### `get_latest_blockhash() -> anyhow::Result<Hash>`
-
-Returns the most recent blockhash. Falls back to RPC if the cache is unhealthy.
-
-### `get_blockhash_with_expiry(expiry_in_ms: u64) -> anyhow::Result<Hash>`
-
-Returns a blockhash that will remain valid for at least `expiry_in_ms` milliseconds. Useful for setting precise transaction timeouts.
-
-- Minimum: one slot duration (~400ms)
-- Maximum: `BLOCKHASH_MAX_AGE_SLOTS * SLOT_DURATION_MS` (~60 seconds)
-- Returns an error if the cache is unhealthy or the expiry is out of range
-
-### `is_blockhash_valid(blockhash: &Hash) -> anyhow::Result<bool>`
-
-Checks whether a blockhash is still within the valid window. Falls back to RPC if the cache is unhealthy.
-
-### `is_healthy() -> BlockhashCacheState`
-
-Returns `Healthy` if the cache has at least 151 entries, or `Unhealthy { slots_missing }` otherwise.
+| Method | Description |
+| --- | --- |
+| `BlockhashCacheService::start(config, shutdown)` | Spawns the gRPC subscriber and runs backfill. Blocks until 151 entries are cached or backfill times out (100s). |
+| `get_latest_blockhash() -> Hash` | Returns the most recent cached blockhash. Falls back to RPC if unhealthy. |
+| `get_blockhash_with_expiry(expiry_in_ms) -> Hash` | Returns a blockhash with at least `expiry_in_ms` of remaining validity. Valid range: `[400, 60_400]` ms (1 slot to 151 slots). Errors if the cache is unhealthy. |
+| `is_blockhash_valid(&hash) -> bool` | Scans the cache's 151-slot window for the hash. Falls back to RPC if unhealthy. |
+| `is_healthy() -> BlockhashCacheState` | `Healthy` if the cache holds ≥151 entries, else `Unhealthy { slots_missing }`. |
+| `verify_blockhash_chain() -> bool` | Returns `true` if every adjacent pair in the deque is linked by matching parent slot+hash. Use to detect reorg-induced corruption. |
 
 ## Configuration
 
-| Field            | Description                                                 |
-| ---------------- | ----------------------------------------------------------- |
-| `solana_rpc_url` | HTTP RPC URL used for backfill and fallback                 |
-| `commitment`     | Commitment level (recommend `processed` for lowest latency) |
-| `grpc_url`       | GRPC url to receive block meta updates                      |
-| `grpc_x_token`   | GRPC X_TOKEN                                                |
+| Field | Description |
+| --- | --- |
+| `solana_rpc_url` | HTTP RPC URL used for backfill and fallback. |
+| `commitment` | Commitment level applied to the gRPC subscription and to RPC fallback calls. `processed` minimises latency (accepts the leader's most recent block, reorg-vulnerable); `confirmed` waits for supermajority votes (~1-2 slots slower, reorg-safe); `finalized` waits ~32 slots. |
+| `grpc_url` | Yellowstone gRPC endpoint serving `blocks_meta`. |
+| `grpc_x_token` | Auth token for the gRPC endpoint. |
+
+### Commitment trade-off
+
+Choosing `processed` means the cache may briefly contain blockhashes from a slot that gets reorged away. Transactions referencing such a hash will silently fail to land. `verify_blockhash_chain()` detects this case after the fact. For most trading/MEV workloads that retry on failure, `processed` is the right choice; for one-shot transactions where a failed land is expensive to recover from, prefer `confirmed`.
 
 ## Environment variables (for the example)
 
