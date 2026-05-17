@@ -16,14 +16,14 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let solana_rpc_url = env::var("HELIUS_RPC_URL")?.to_string();
+    let solana_rpc_url = env::var("SOLANA_RPC_URL")?.to_string();
     let solana_rpc_client = RpcClient::new(solana_rpc_url.clone());
 
     let config = ServiceConfig::try_new(
         solana_rpc_url,
         CommitmentConfig::processed(),
-        Url::from_str(&env::var("TRITON_GRPC_URL")?)?,
-        env::var("TRITON_GRPC_X_TOKEN".to_string())?,
+        Url::from_str(&env::var("GRPC_URL")?)?,
+        env::var("GRPC_X_TOKEN")?,
     )?;
 
     let shutdown_token = CancellationToken::new();

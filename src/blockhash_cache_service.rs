@@ -68,6 +68,7 @@ pub enum BlockhashCacheState {
 pub struct BlockhashCacheService {
     cache: Arc<BlockhashSequence>,
     rpc_client: Arc<RpcClient>,
+    commitment: CommitmentConfig,
 }
 
 impl BlockhashCacheService {
@@ -84,7 +85,10 @@ impl BlockhashCacheService {
             "starting blockhash cache service"
         );
 
-        let rpc_client = Arc::new(RpcClient::new(solana_rpc_url.to_string()));
+        let rpc_client = Arc::new(RpcClient::new_with_commitment(
+            solana_rpc_url.to_string(),
+            commitment,
+        ));
 
         let backfill_completed = Arc::new(AtomicBool::new(false));
         let cache = Arc::new(BlockhashSequence::new());
@@ -95,6 +99,7 @@ impl BlockhashCacheService {
         let grpc_sub = GrpcBlockhashSubscribe::new(
             grpc_url,
             Some(grpc_x_token),
+            commitment,
             Arc::clone(&cache),
             signal_blockhash_backfill_tx,
             shutdown_token.clone(),
@@ -110,7 +115,11 @@ impl BlockhashCacheService {
         )
         .await;
 
-        Self { cache, rpc_client }
+        Self {
+            cache,
+            rpc_client,
+            commitment,
+        }
     }
 
     pub async fn is_healthy(&self) -> BlockhashCacheState {
@@ -142,7 +151,7 @@ impl BlockhashCacheService {
             BlockhashCacheState::Unhealthy { slots_missing: _ } => {
                 warn!(blockhash = %blockhash, "cache unhealthy, falling back to rpc for blockhash validity");
                 self.rpc_client
-                    .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
+                    .is_blockhash_valid(blockhash, self.commitment)
                     .await
                     .map_err(|e| anyhow::anyhow!(e))
             }

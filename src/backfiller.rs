@@ -79,7 +79,7 @@ pub async fn run_blockhash_backfill_on_startup(
                         );
 
                         if cache_len >= BLOCKHASH_MAX_AGE_SLOTS {
-                            info!(blockhashes_backfilled, "backfill complete");
+                            info!(blockhashes_backfilled, cache_len, "backfill complete");
                             break;
                         }
 
@@ -95,14 +95,19 @@ pub async fn run_blockhash_backfill_on_startup(
                 }
             }
             Err(e) => {
-                warn!(slot = current_slot, error = %e, "failed to fetch block during backfill");
+                warn!(slot = current_slot, error = %e, "failed to fetch block during backfill, skipping slot");
+                // Solana skips slots on missed leader windows. Decrement so we don't
+                // re-request the same missing slot until the outer timeout fires.
+                current_slot = current_slot.saturating_sub(1);
             }
         }
     }
 
+    let final_cache_len = cache.acquire_read().await.len();
     backfill_completed.store(true, Ordering::Release);
     info!(
         blockhashes_backfilled,
+        cache_len = final_cache_len,
         elapsed_ms = started.elapsed().as_millis(),
         "blockhash backfill finished"
     );
