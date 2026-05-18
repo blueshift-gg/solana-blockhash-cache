@@ -99,7 +99,6 @@ impl BlockhashCacheService {
         let grpc_sub = GrpcBlockhashSubscribe::new(
             grpc_url,
             Some(grpc_x_token),
-            commitment,
             Arc::clone(&cache),
             signal_blockhash_backfill_tx,
             shutdown_token.clone(),
