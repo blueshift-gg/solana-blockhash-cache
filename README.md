@@ -50,7 +50,6 @@ solana-blockhash-cache = { git = "git@github.com:blueshift-gg/solana-blockhash-c
 ```rust
 use solana_blockhash_cache::blockhash_cache_service::BlockhashCacheService;
 use solana_blockhash_cache::config::ServiceConfig;
-use solana_commitment_config::CommitmentConfig;
 use std::str::FromStr;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -59,7 +58,6 @@ use url::Url;
 async fn main() -> anyhow::Result<()> {
     let config = ServiceConfig::try_new(
         std::env::var("SOLANA_RPC_URL")?,
-        CommitmentConfig::processed(),
         Url::from_str(&std::env::var("GRPC_URL")?)?,
         std::env::var("GRPC_X_TOKEN")?,
     )?;
@@ -98,13 +96,14 @@ async fn main() -> anyhow::Result<()> {
 | Field | Description |
 | --- | --- |
 | `solana_rpc_url` | HTTP RPC URL used for backfill and fallback. |
-| `commitment` | Commitment level applied to the gRPC subscription and to RPC fallback calls. `processed` minimises latency (accepts the leader's most recent block, reorg-vulnerable); `confirmed` waits for supermajority votes (~1-2 slots slower, reorg-safe); `finalized` waits ~32 slots. |
 | `grpc_url` | Yellowstone gRPC endpoint serving `blocks_meta`. |
 | `grpc_x_token` | Auth token for the gRPC endpoint. |
 
-### Commitment trade-off
+### Commitment
 
-Choosing `processed` means the cache may briefly contain blockhashes from a slot that gets reorged away. Transactions referencing such a hash will silently fail to land. `verify_blockhash_chain()` detects this case after the fact. For most trading/MEV workloads that retry on failure, `processed` is the right choice; for one-shot transactions where a failed land is expensive to recover from, prefer `confirmed`.
+The gRPC subscription and the RPC fallback paths (`is_blockhash_valid`, `get_latest_blockhash`) operate at `processed`. This matches the level at which the bank registers blockhashes ([agave `bank.rs::register_recent_blockhash`](https://github.com/anza-xyz/agave/blob/0e24419adb73c446ebe4026e378f5af337770072/runtime/src/bank.rs#L3199)) — blockhash queue membership is independent of confirmation, so there is no meaningful `confirmed`/`finalized` alternative for this cache. The backfiller uses `confirmed` only because `getBlock` requires it.
+
+Since `processed` accepts the leader's most recent block, a brief reorg can leave the cache holding a hash from a dropped slot. Transactions referencing such a hash will silently fail to land; `verify_blockhash_chain()` detects this after the fact.
 
 ## Environment variables (for the example)
 

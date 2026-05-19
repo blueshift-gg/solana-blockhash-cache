@@ -21,7 +21,6 @@ async fn main() -> anyhow::Result<()> {
 
     let config = ServiceConfig::try_new(
         solana_rpc_url,
-        CommitmentConfig::processed(),
         Url::from_str(&env::var("GRPC_URL")?)?,
         env::var("GRPC_X_TOKEN")?,
     )?;
