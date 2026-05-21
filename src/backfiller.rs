@@ -23,7 +23,7 @@ pub async fn run_blockhash_backfill_on_startup(
     rpc_client: Arc<RpcClient>,
     signal_blockhash_backfill_rx: oneshot::Receiver<Slot>,
     backfill_completed: Arc<AtomicBool>,
-) {
+) -> anyhow::Result<()> {
     info!("waiting for backfill signal from blockhash source");
 
     let parent_slot = match signal_blockhash_backfill_rx.await {
@@ -34,14 +34,13 @@ pub async fn run_blockhash_backfill_on_startup(
         Err(_e) => {
             warn!("backfill signal sender dropped, skipping backfill");
             backfill_completed.store(true, Ordering::Release);
-            return;
+            return Ok(());
         }
     };
 
     let started = tokio::time::Instant::now();
     let mut current_slot = parent_slot;
     let mut blockhashes_backfilled = 0;
-    let mut is_initial_fetch = true;
 
     while blockhashes_backfilled < BLOCKHASH_MAX_AGE_SLOTS {
         if started.elapsed() > BLOCKHASH_CACHE_BACKFILL_TIMEOUT_DURATION {
@@ -85,7 +84,6 @@ pub async fn run_blockhash_backfill_on_startup(
                         }
 
                         current_slot = block.parent_slot;
-                        is_initial_fetch = false;
                     }
                     _ => {
                         warn!(
@@ -97,18 +95,15 @@ pub async fn run_blockhash_backfill_on_startup(
                 }
             }
             Err(e) => {
-                if is_initial_fetch {
-                    // Initial slot from gRPC may not yet be available via getBlock
-                    // (commitment skew) or may have ended up skipped. Walk one slot
-                    // back and try again until the outer timeout fires.
+                if blockhashes_backfilled == 0 {
+                    // initial slot may be an unconfirmed block or RPC issue; walk back
                     warn!(slot = current_slot, error = %e, "initial backfill fetch failed, walking back one slot");
                     current_slot = current_slot.saturating_sub(1);
                 } else {
-                    // Mid-walk fetches use block.parent_slot from a confirmed block,
-                    // which is never a skipped slot. Any error here is a real RPC
-                    // failure, so stop instead of walking past valid history.
-                    warn!(slot = current_slot, error = %e, "failed to fetch block during backfill, stopping");
-                    break;
+                    // confirmed parent_slot is never skipped, so this is a real RPC failure
+                    return Err(anyhow::anyhow!(
+                        "backfill RPC failure at slot {current_slot}: {e}"
+                    ));
                 }
             }
         }
@@ -122,6 +117,7 @@ pub async fn run_blockhash_backfill_on_startup(
         elapsed_ms = started.elapsed().as_millis(),
         "blockhash backfill finished"
     );
+    Ok(())
 }
 
 pub async fn fetch_block_with_timeout(

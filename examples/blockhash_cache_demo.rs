@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let shutdown_token = CancellationToken::new();
 
     let blockhash_cache_service =
-        BlockhashCacheService::start(config, shutdown_token.clone()).await;
+        BlockhashCacheService::start(config, shutdown_token.clone()).await?;
 
     let latest_blockhash = blockhash_cache_service.get_latest_blockhash().await?;
 

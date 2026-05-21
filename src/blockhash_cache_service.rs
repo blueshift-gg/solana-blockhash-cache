@@ -71,7 +71,10 @@ pub struct BlockhashCacheService {
 }
 
 impl BlockhashCacheService {
-    pub async fn start(config: ServiceConfig, shutdown_token: CancellationToken) -> Self {
+    pub async fn start(
+        config: ServiceConfig,
+        shutdown_token: CancellationToken,
+    ) -> anyhow::Result<Self> {
         let ServiceConfig {
             solana_rpc_url,
             grpc_url,
@@ -109,9 +112,9 @@ impl BlockhashCacheService {
             signal_blockhash_backfill_rx,
             Arc::clone(&backfill_completed),
         )
-        .await;
+        .await?;
 
-        Self { cache, rpc_client }
+        Ok(Self { cache, rpc_client })
     }
 
     pub async fn is_healthy(&self) -> BlockhashCacheState {
