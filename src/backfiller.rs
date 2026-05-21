@@ -41,6 +41,7 @@ pub async fn run_blockhash_backfill_on_startup(
     let started = tokio::time::Instant::now();
     let mut current_slot = parent_slot;
     let mut blockhashes_backfilled = 0;
+    let mut is_initial_fetch = true;
 
     while blockhashes_backfilled < BLOCKHASH_MAX_AGE_SLOTS {
         if started.elapsed() > BLOCKHASH_CACHE_BACKFILL_TIMEOUT_DURATION {
@@ -84,6 +85,7 @@ pub async fn run_blockhash_backfill_on_startup(
                         }
 
                         current_slot = block.parent_slot;
+                        is_initial_fetch = false;
                     }
                     _ => {
                         warn!(
@@ -95,10 +97,19 @@ pub async fn run_blockhash_backfill_on_startup(
                 }
             }
             Err(e) => {
-                warn!(slot = current_slot, error = %e, "failed to fetch block during backfill, skipping slot");
-                // Solana skips slots on missed leader windows. Decrement so we don't
-                // re-request the same missing slot until the outer timeout fires.
-                current_slot = current_slot.saturating_sub(1);
+                if is_initial_fetch {
+                    // Initial slot from gRPC may not yet be available via getBlock
+                    // (commitment skew) or may have ended up skipped. Walk one slot
+                    // back and try again until the outer timeout fires.
+                    warn!(slot = current_slot, error = %e, "initial backfill fetch failed, walking back one slot");
+                    current_slot = current_slot.saturating_sub(1);
+                } else {
+                    // Mid-walk fetches use block.parent_slot from a confirmed block,
+                    // which is never a skipped slot. Any error here is a real RPC
+                    // failure, so stop instead of walking past valid history.
+                    warn!(slot = current_slot, error = %e, "failed to fetch block during backfill, stopping");
+                    break;
+                }
             }
         }
     }
