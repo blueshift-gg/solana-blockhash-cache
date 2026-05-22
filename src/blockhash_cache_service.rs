@@ -71,20 +71,24 @@ pub struct BlockhashCacheService {
 }
 
 impl BlockhashCacheService {
-    pub async fn start(config: ServiceConfig, shutdown_token: CancellationToken) -> Self {
+    pub async fn start(
+        config: ServiceConfig,
+        shutdown_token: CancellationToken,
+    ) -> anyhow::Result<Self> {
         let ServiceConfig {
             solana_rpc_url,
-            commitment,
             grpc_url,
             grpc_x_token,
         } = config;
 
-        info!(
-            commitment = ?commitment,
-            "starting blockhash cache service"
-        );
+        info!("starting blockhash cache service");
 
-        let rpc_client = Arc::new(RpcClient::new(solana_rpc_url.to_string()));
+        // Processed matches the gRPC subscription and the level at which the
+        // bank registers blockhashes (agave bank.rs register_recent_blockhash).
+        let rpc_client = Arc::new(RpcClient::new_with_commitment(
+            solana_rpc_url.to_string(),
+            CommitmentConfig::processed(),
+        ));
 
         let backfill_completed = Arc::new(AtomicBool::new(false));
         let cache = Arc::new(BlockhashSequence::new());
@@ -108,9 +112,9 @@ impl BlockhashCacheService {
             signal_blockhash_backfill_rx,
             Arc::clone(&backfill_completed),
         )
-        .await;
+        .await?;
 
-        Self { cache, rpc_client }
+        Ok(Self { cache, rpc_client })
     }
 
     pub async fn is_healthy(&self) -> BlockhashCacheState {
@@ -142,7 +146,7 @@ impl BlockhashCacheService {
             BlockhashCacheState::Unhealthy { slots_missing: _ } => {
                 warn!(blockhash = %blockhash, "cache unhealthy, falling back to rpc for blockhash validity");
                 self.rpc_client
-                    .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
+                    .is_blockhash_valid(blockhash, CommitmentConfig::processed())
                     .await
                     .map_err(|e| anyhow::anyhow!(e))
             }
@@ -166,7 +170,7 @@ impl BlockhashCacheService {
                 warn!("cache unhealthy, falling back to rpc for latest blockhash");
                 let latest_blockhash = self
                     .rpc_client
-                    .get_latest_blockhash_with_commitment(self.rpc_client.commitment())
+                    .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
                     .await
                     .map_err(|e| anyhow::anyhow!(e));
                 latest_blockhash.map(|b| b.0)

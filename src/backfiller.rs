@@ -23,7 +23,7 @@ pub async fn run_blockhash_backfill_on_startup(
     rpc_client: Arc<RpcClient>,
     signal_blockhash_backfill_rx: oneshot::Receiver<Slot>,
     backfill_completed: Arc<AtomicBool>,
-) {
+) -> anyhow::Result<()> {
     info!("waiting for backfill signal from blockhash source");
 
     let parent_slot = match signal_blockhash_backfill_rx.await {
@@ -34,7 +34,7 @@ pub async fn run_blockhash_backfill_on_startup(
         Err(_e) => {
             warn!("backfill signal sender dropped, skipping backfill");
             backfill_completed.store(true, Ordering::Release);
-            return;
+            return Ok(());
         }
     };
 
@@ -79,7 +79,7 @@ pub async fn run_blockhash_backfill_on_startup(
                         );
 
                         if cache_len >= BLOCKHASH_MAX_AGE_SLOTS {
-                            info!(blockhashes_backfilled, "backfill complete");
+                            info!(blockhashes_backfilled, cache_len, "backfill complete");
                             break;
                         }
 
@@ -95,17 +95,29 @@ pub async fn run_blockhash_backfill_on_startup(
                 }
             }
             Err(e) => {
-                warn!(slot = current_slot, error = %e, "failed to fetch block during backfill");
+                if blockhashes_backfilled == 0 {
+                    // initial slot may be an unconfirmed block or RPC issue; walk back
+                    warn!(slot = current_slot, error = %e, "initial backfill fetch failed, walking back one slot");
+                    current_slot = current_slot.saturating_sub(1);
+                } else {
+                    // confirmed parent_slot is never skipped, so this is a real RPC failure
+                    return Err(anyhow::anyhow!(
+                        "backfill RPC failure at slot {current_slot}: {e}"
+                    ));
+                }
             }
         }
     }
 
+    let final_cache_len = cache.acquire_read().await.len();
     backfill_completed.store(true, Ordering::Release);
     info!(
         blockhashes_backfilled,
+        cache_len = final_cache_len,
         elapsed_ms = started.elapsed().as_millis(),
         "blockhash backfill finished"
     );
+    Ok(())
 }
 
 pub async fn fetch_block_with_timeout(
