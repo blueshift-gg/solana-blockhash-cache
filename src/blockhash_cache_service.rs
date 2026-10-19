@@ -46,6 +46,12 @@ impl BlockhashLink {
 #[derive(Debug)]
 pub struct BlockhashSequence(RwLock<VecDeque<BlockhashLink>>);
 
+impl Default for BlockhashSequence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BlockhashSequence {
     pub fn new() -> Self {
         Self(RwLock::new(VecDeque::with_capacity(BLOCKHASH_CACHE_SIZE)))
@@ -83,11 +89,11 @@ impl BlockhashCacheService {
 
         info!("starting blockhash cache service");
 
-        // Processed matches the gRPC subscription and the level at which the
-        // bank registers blockhashes (agave bank.rs register_recent_blockhash).
+        // Confirmed matches the gRPC subscription (see grpc_subscribe.rs), so the
+        // fallback path cannot return a hash from a bank the cluster drops.
         let rpc_client = Arc::new(RpcClient::new_with_commitment(
             solana_rpc_url.to_string(),
-            CommitmentConfig::processed(),
+            CommitmentConfig::confirmed(),
         ));
 
         let backfill_completed = Arc::new(AtomicBool::new(false));
@@ -146,7 +152,7 @@ impl BlockhashCacheService {
             BlockhashCacheState::Unhealthy { slots_missing: _ } => {
                 warn!(blockhash = %blockhash, "cache unhealthy, falling back to rpc for blockhash validity");
                 self.rpc_client
-                    .is_blockhash_valid(blockhash, CommitmentConfig::processed())
+                    .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
                     .await
                     .map_err(|e| anyhow::anyhow!(e))
             }
@@ -170,7 +176,7 @@ impl BlockhashCacheService {
                 warn!("cache unhealthy, falling back to rpc for latest blockhash");
                 let latest_blockhash = self
                     .rpc_client
-                    .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
+                    .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
                     .await
                     .map_err(|e| anyhow::anyhow!(e));
                 latest_blockhash.map(|b| b.0)

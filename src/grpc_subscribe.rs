@@ -205,9 +205,11 @@ fn blockhash_subscription() -> SubscribeRequest {
         "blockhash_sub".to_string(),
         SubscribeRequestFilterBlocksMeta {},
     );
+    // Confirmed: one bank per slot. At Processed an Alpenglow slot can freeze
+    // two banks, and this cache cannot tell which bank the cluster keeps.
     SubscribeRequest {
         blocks_meta: blockhash_subs,
-        commitment: Some(CommitmentLevel::Processed as i32),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
         ..Default::default()
     }
 }
